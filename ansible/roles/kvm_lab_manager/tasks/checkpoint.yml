@@ -1,0 +1,106 @@
+---
+- name: Require checkpoint inputs
+  ansible.builtin.assert:
+    that:
+      - project_manifest_file | default('') | length > 0
+      - checkpoint_id | length > 0
+- name: Read project manifest
+  ansible.builtin.include_vars:
+    file: "{{ project_manifest_file }}"
+    name: project
+- name: Read registered discovery manifest
+  ansible.builtin.include_vars:
+    file: "{{ kvm_lab_storage_root }}/projects/{{ project_id }}/manifest.json"
+    name: registered_project
+- name: Refuse replacement of existing checkpoint
+  ansible.builtin.stat:
+    path: "{{ kvm_lab_storage_root }}/projects/{{ project_id }}/checkpoints/{{ checkpoint_id }}"
+  register: checkpoint_path
+- name: Checkpoint must not already exist
+  ansible.builtin.assert:
+    that: not checkpoint_path.stat.exists
+    fail_msg: "Checkpoint is immutable and cannot be overwritten"
+- name: Create staging directory
+  ansible.builtin.tempfile:
+    state: directory
+    path: "{{ kvm_lab_storage_root }}/projects/{{ project_id }}"
+    prefix: ".checkpoint-{{ checkpoint_id }}-"
+  register: checkpoint_staging
+- name: Create checkpoint parent directory
+  ansible.builtin.file:
+    path: "{{ kvm_lab_storage_root }}/projects/{{ project_id }}/checkpoints"
+    state: directory
+    owner: "{{ kvm_lab_owner }}"
+    group: "{{ kvm_lab_group }}"
+    mode: "0750"
+- name: Create checkpoint subdirectories
+  ansible.builtin.file:
+    path: "{{ checkpoint_staging.path }}/{{ item }}"
+    state: directory
+    owner: "{{ kvm_lab_owner }}"
+    group: "{{ kvm_lab_group }}"
+    mode: "0750"
+  loop: [disks, domains, manifest]
+- name: Stop registered domains gracefully
+  ansible.builtin.command:
+    argv: ["{{ virsh_binary }}", "-c", "{{ libvirt_uri }}", "shutdown", "{{ item.name }}"]
+  loop: "{{ project.virtual_machines | sort(attribute='stop_order', reverse=true) }}"
+  changed_when: true
+  failed_when: false
+- name: Wait for domains to shut off
+  ansible.builtin.command:
+    argv: ["{{ virsh_binary }}", "-c", "{{ libvirt_uri }}", "domstate", "{{ item.name }}"]
+  loop: "{{ project.virtual_machines }}"
+  register: stopped
+  until: "'shut off' in stopped.stdout"
+  retries: "{{ kvm_lab_shutdown_retries | default(30) | int }}"
+  delay: "{{ kvm_lab_shutdown_delay | default(5) | int }}"
+  changed_when: false
+- name: Convert each source disk to standalone QCOW2
+  ansible.builtin.command:
+    argv: ["{{ qemu_img_binary }}", "convert", "-p", "-O", "qcow2", "{{ item }}", "{{ checkpoint_staging.path }}/disks/{{ item | basename }}.qcow2"]
+  loop: "{{ registered_project.disks | default([]) }}"
+  loop_control:
+    label: "{{ item | basename }}"
+  changed_when: true
+- name: Check each checkpoint disk
+  ansible.builtin.command:
+    argv: ["{{ qemu_img_binary }}", "check", "--format", "qcow2", "{{ checkpoint_staging.path }}/disks/{{ item | basename }}.qcow2"]
+  loop: "{{ registered_project.disks | default([]) }}"
+  loop_control:
+    index_var: disk_index
+  changed_when: false
+- name: Hash only immutable checkpoint disks
+  ansible.builtin.command:
+    argv: [sha256sum, "{{ checkpoint_staging.path }}/disks/{{ item | basename }}.qcow2"]
+  loop: "{{ registered_project.disks | default([]) }}"
+  register: disk_hashes
+  changed_when: false
+- name: Read disk metadata
+  ansible.builtin.command:
+    argv: ["{{ qemu_img_binary }}", "info", "--output=json", "--force-share", "{{ checkpoint_staging.path }}/disks/{{ item | basename }}.qcow2"]
+  loop: "{{ registered_project.disks | default([]) }}"
+  register: disk_info
+  changed_when: false
+- name: Build complete immutable disk records
+  ansible.builtin.set_fact:
+    checkpoint_disks: "{{ checkpoint_disks | default([]) + [ {'name': item.item | basename, 'file': kvm_lab_storage_root + '/projects/' + project_id + '/checkpoints/' + checkpoint_id + '/disks/' + (item.item | basename) + '.qcow2', 'role': 'writable-disk', 'format': 'qcow2', 'virtual_bytes': (disk_info.results[disk_index].stdout | from_json)['virtual-size'] | int, 'physical_bytes': (disk_info.results[disk_index].stdout | from_json)['actual-size'] | int, 'sha256': (item.stdout.split()[0]), 'backing_file': None} ] }}"
+  loop: "{{ disk_hashes.results }}"
+  loop_control:
+    index_var: disk_index
+- name: Write immutable checkpoint manifest
+  ansible.builtin.copy:
+    content: "{{ {'schema_version': 1, 'project_id': project_id, 'checkpoint_id': checkpoint_id, 'created_by': ansible_user_id | default('ansible'), 'source_project_manifest_revision': registered_project.manifest_revision | default(''), 'source_checkpoint_id': registered_project.source_checkpoint_id | default(None), 'source_run_id': registered_project.source_run_id | default(None), 'kvm_host_ref': registered_project.kvm_host_ref | default(project.kvm_host_ref), 'libvirt_uri': libvirt_uri | regex_replace('://[^/@]+@', '://'), 'status': 'immutable', 'virtual_machines': registered_project.virtual_machines, 'disks': checkpoint_disks, 'totals': {'logical_bytes': checkpoint_disks | map(attribute='virtual_bytes') | map('int') | sum | int, 'physical_bytes': checkpoint_disks | map(attribute='physical_bytes') | map('int') | sum | int}} | to_nice_json(indent=2, sort_keys=true) }}\n"
+    dest: "{{ checkpoint_staging.path }}/manifest/checkpoint.json"
+    owner: "{{ kvm_lab_owner }}"
+    group: "{{ kvm_lab_group }}"
+    mode: "0440"
+- name: Atomically publish checkpoint
+  ansible.builtin.command:
+    argv: [mv, "{{ checkpoint_staging.path }}", "{{ kvm_lab_storage_root }}/projects/{{ project_id }}/checkpoints/{{ checkpoint_id }}"]
+  changed_when: true
+- name: Make published checkpoint immutable
+  ansible.builtin.file:
+    path: "{{ kvm_lab_storage_root }}/projects/{{ project_id }}/checkpoints/{{ checkpoint_id }}"
+    mode: "0550"
+    recurse: true

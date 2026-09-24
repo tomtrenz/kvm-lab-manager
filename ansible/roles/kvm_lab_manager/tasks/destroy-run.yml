@@ -1,0 +1,33 @@
+---
+- name: Require explicit destruction confirmation
+  ansible.builtin.assert:
+    that:
+      - confirm_destroy == 'destroy'
+      - project_id | length > 0
+      - run_id | length > 0
+- name: Refuse checkpoint-shaped target
+  ansible.builtin.assert:
+    that: run_id not in ['checkpoint', 'checkpoints']
+- name: Resolve and validate exact run directory
+  ansible.builtin.command:
+    argv: [realpath, "{{ kvm_lab_storage_root }}/projects/{{ project_id }}/runs/{{ run_id }}"]
+  register: run_realpath
+  changed_when: false
+- name: Ensure target cannot escape project run root
+  ansible.builtin.assert:
+    that:
+      - run_realpath.stdout == kvm_lab_storage_root + '/projects/' + project_id + '/runs/' + run_id
+- name: Ensure all run domains are stopped
+  ansible.builtin.command:
+    argv: ["{{ virsh_binary }}", "-c", "{{ libvirt_uri }}", "domstate", "{{ item.name }}"]
+  loop: "{{ project.virtual_machines | default([]) }}"
+  register: run_states
+  changed_when: false
+- name: Refuse deletion of active run
+  ansible.builtin.assert:
+    that: "'running' not in (run_states.results | map(attribute='stdout') | join(' '))"
+- name: Remove only exact run directory
+  ansible.builtin.file:
+    path: "{{ run_realpath.stdout }}"
+    state: absent
+*** End Patch

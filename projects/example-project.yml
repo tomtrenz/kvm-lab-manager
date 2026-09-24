@@ -1,0 +1,16 @@
+---
+schema_version: 1
+project_id: "${PROJECT_ID}"
+kvm_host_ref: "${KVM_HOST_REF}"
+virtual_machines:
+  - name: "${VM_NAME_1}"
+    start_order: "${VM_START_ORDER_1}"
+    stop_order: "${VM_STOP_ORDER_1}"
+  - name: "${VM_NAME_2}"
+    start_order: "${VM_START_ORDER_2}"
+    stop_order: "${VM_STOP_ORDER_2}"
+scheduling:
+  exclusive_groups: ["${EXCLUSIVE_GROUP}"]
+  allow_concurrent_projects: false
+  known_hostnames: []
+  known_addresses: []

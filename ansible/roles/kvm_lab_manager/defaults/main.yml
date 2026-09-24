@@ -1,0 +1,25 @@
+---
+operation: ""
+project_id: ""
+checkpoint_id: ""
+run_id: ""
+validation_mode: quick
+activation_mode: replace
+start_after_activation: false
+dry_run: false
+confirm_destroy: ""
+config_file: ""
+project_manifest_file: ""
+kvm_lab_storage_root: ""
+kvm_lab_runtime_root: ""
+kvm_lab_registry_path: ""
+kvm_lab_owner: ""
+kvm_lab_group: ""
+libvirt_uri: ""
+kvm_lab_lock_timeout_seconds: null
+kvm_lab_shutdown_retries: null
+kvm_lab_shutdown_delay: null
+allow_force_destroy: false
+checksum_algorithm: sha256
+qemu_img_binary: qemu-img
+virsh_binary: virsh

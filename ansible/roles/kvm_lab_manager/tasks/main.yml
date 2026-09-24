@@ -1,0 +1,53 @@
+---
+- name: Load global configuration
+  ansible.builtin.include_vars:
+    file: "{{ config_file }}"
+    name: lab_config
+  when: config_file | length > 0
+
+- name: Apply configuration hierarchy
+  ansible.builtin.set_fact:
+    kvm_lab_storage_root: "{{ lab_config.kvm_lab_storage_root }}"
+    kvm_lab_runtime_root: "{{ lab_config.kvm_lab_runtime_root }}"
+    kvm_lab_registry_path: "{{ lab_config.kvm_lab_registry_path }}"
+    kvm_lab_lock_timeout_seconds: "{{ lab_config.kvm_lab_lock_timeout_seconds | int }}"
+    kvm_lab_shutdown_retries: "{{ lab_config.kvm_lab_shutdown_retries | int }}"
+    kvm_lab_shutdown_delay: "{{ lab_config.kvm_lab_shutdown_delay | int }}"
+    kvm_lab_owner: "{{ lab_config.kvm_lab_owner }}"
+    kvm_lab_group: "{{ lab_config.kvm_lab_group }}"
+    libvirt_uri: "{{ lab_config.libvirt_uri }}"
+    checksum_algorithm: "{{ lab_config.checksum_algorithm | default('sha256') }}"
+  when: lab_config is defined
+
+- name: Validate required operation and identifiers
+  ansible.builtin.assert:
+    that:
+      - operation in ['register', 'checkpoint', 'validate', 'activate', 'park', 'start', 'list', 'destroy-run']
+      - project_id | length == 0 or project_id is match('^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$')
+      - checkpoint_id | length == 0 or checkpoint_id is match('^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$')
+      - run_id | length == 0 or run_id is match('^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$')
+      - kvm_lab_storage_root is defined
+      - kvm_lab_storage_root is match('^/[^~$]*$')
+      - kvm_lab_lock_timeout_seconds is not none
+      - kvm_lab_shutdown_retries is not none
+      - kvm_lab_shutdown_delay is not none
+    fail_msg: "Invalid operation, identifier, configuration or storage root"
+
+- name: Acquire operation locks
+  ansible.builtin.include_tasks: lock.yml
+  when: operation not in ['list']
+- name: Load project definition when supplied
+  ansible.builtin.include_vars:
+    file: "{{ project_manifest_file }}"
+    name: project
+  when:
+    - project_manifest_file | default('') | length > 0
+    - (project_manifest_file | default('')) is file
+- name: Dispatch lifecycle operation with guaranteed lock release
+  block:
+    - name: Run selected lifecycle operation
+      ansible.builtin.include_tasks: "{{ operation }}.yml"
+  always:
+    - name: Release operation locks
+      ansible.builtin.include_tasks: unlock.yml
+      when: operation not in ['list']

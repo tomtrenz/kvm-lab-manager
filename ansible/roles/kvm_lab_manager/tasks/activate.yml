@@ -1,0 +1,37 @@
+---
+- name: Require activation parameters
+  ansible.builtin.assert:
+    that:
+      - checkpoint_id | length > 0
+      - run_id | length > 0
+- name: Validate selected checkpoint first
+  ansible.builtin.include_tasks: validate.yml
+- name: Create run directories
+  ansible.builtin.file:
+    path: "{{ kvm_lab_storage_root }}/projects/{{ project_id }}/runs/{{ run_id }}/{{ item }}"
+    state: directory
+    owner: "{{ kvm_lab_owner }}"
+    group: "{{ kvm_lab_group }}"
+    mode: "0750"
+  loop: [disks, domains, runtime]
+- name: Create writable overlay with explicit backing format
+  ansible.builtin.command:
+    argv: ["{{ qemu_img_binary }}", "create", "-f", "qcow2", "-F", "qcow2", "-b", "{{ item.backing_file }}", "{{ kvm_lab_storage_root }}/projects/{{ project_id }}/runs/{{ run_id }}/disks/{{ item.name }}.qcow2"]
+    creates: "{{ kvm_lab_storage_root }}/projects/{{ project_id }}/runs/{{ run_id }}/disks/{{ item.name }}.qcow2"
+  loop: "{{ checkpoint.disks | default([]) }}"
+  changed_when: true
+- name: Write run intent for Terraform
+  ansible.builtin.copy:
+    content: "{{ {'project_id': project_id, 'checkpoint_id': checkpoint_id, 'run_id': run_id, 'activation_mode': activation_mode, 'start_after_activation': start_after_activation, 'disks': checkpoint.disks | default([])} | to_nice_json(indent=2, sort_keys=true) }}\n"
+    dest: "{{ kvm_lab_storage_root }}/projects/{{ project_id }}/runs/{{ run_id }}/runtime/activation.json"
+    owner: "{{ kvm_lab_owner }}"
+    group: "{{ kvm_lab_group }}"
+    mode: "0640"
+- name: Register run atomically
+  ansible.builtin.copy:
+    content: "{{ {'project_id': project_id, 'run_id': run_id, 'checkpoint_id': checkpoint_id, 'exclusivity_groups': checkpoint.exclusivity_groups | default([]), 'domains': checkpoint.virtual_machines | map(attribute='name') | list} | to_nice_json(indent=2, sort_keys=true) }}\n"
+    dest: "{{ kvm_lab_registry_path }}"
+    owner: "{{ kvm_lab_owner }}"
+    group: "{{ kvm_lab_group }}"
+    mode: "0640"
+  when: start_after_activation | bool

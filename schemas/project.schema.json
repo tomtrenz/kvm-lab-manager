@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/kvm-lab-manager/project.schema.json",
+  "type": "object",
+  "required": ["schema_version", "project_id", "kvm_host_ref", "virtual_machines"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "project_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"},
+    "kvm_host_ref": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"},
+    "virtual_machines": {"type": "array", "minItems": 1, "items": {"type": "object", "required": ["name"], "properties": {"name": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"}, "start_order": {"type": ["integer", "string"]}, "stop_order": {"type": ["integer", "string"]}}, "additionalProperties": false}},
+    "scheduling": {"type": "object", "properties": {"exclusive_groups": {"type": "array", "items": {"type": "string"}}, "allow_concurrent_projects": {"type": "boolean"}, "known_hostnames": {"type": "array", "items": {"type": "string"}}, "known_addresses": {"type": "array", "items": {"type": "string"}}}, "additionalProperties": false}
+  },
+  "additionalProperties": false
+}

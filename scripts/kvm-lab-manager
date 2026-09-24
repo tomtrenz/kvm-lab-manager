@@ -1,0 +1,90 @@
+#!/usr/bin/env python3
+"""Thin validated dispatcher; lifecycle business logic lives in Ansible."""
+import argparse
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+from kvm_lab_manager_lib import validate_identifier
+
+ROOT = Path(__file__).resolve().parents[1]
+PLAYBOOKS = {
+    "register": "register_project.yml",
+    "checkpoint": "create_checkpoint.yml",
+    "validate": "validate_checkpoint.yml",
+    "activate": "activate_project.yml",
+    "park": "park_project.yml",
+    "start": "start_project.yml",
+    "list": "list_projects.yml",
+    "destroy-run": "destroy_run.yml",
+}
+
+
+def parser():
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--config", default=os.environ.get("KVM_LAB_CONFIG"))
+    common.add_argument("--inventory", default=os.environ.get("KVM_LAB_INVENTORY"))
+    common.add_argument("--project-file", default=os.environ.get("KVM_LAB_PROJECT_FILE"))
+    common.add_argument("--project")
+    common.add_argument("--checkpoint")
+    common.add_argument("--run")
+    common.add_argument("--validation", choices=("quick", "full"), default="quick")
+    common.add_argument("--mode", choices=("replace", "add"), default="replace")
+    common.add_argument("--start-after-activation", action="store_true")
+    common.add_argument("--dry-run", action="store_true")
+    common.add_argument("--confirm-destroy")
+    result = argparse.ArgumentParser(prog="kvm-lab-manager")
+    commands = result.add_subparsers(dest="action", required=True)
+    for name in PLAYBOOKS:
+        command = commands.add_parser(name, parents=[common])
+        command.set_defaults(action=name)
+    return result
+
+
+def main():
+    args = parser().parse_args()
+    if args.project:
+        validate_identifier(args.project, "project")
+    if args.checkpoint:
+        validate_identifier(args.checkpoint, "checkpoint")
+    if args.run:
+        validate_identifier(args.run, "run")
+    if args.action == "destroy-run" and args.confirm_destroy != "destroy":
+        raise SystemExit("destroy-run requires --confirm-destroy destroy")
+    if not args.config or not args.inventory:
+        raise SystemExit("--config and --inventory are required (or set KVM_LAB_CONFIG/KVM_LAB_INVENTORY)")
+    config = os.path.realpath(args.config)
+    inventory = os.path.realpath(args.inventory)
+    if not os.path.isfile(config) or not os.path.isfile(inventory):
+        raise SystemExit("configuration and inventory must be existing files")
+    extra = [
+        "operation=%s" % args.action,
+        "project_id=%s" % (args.project or ""),
+        "checkpoint_id=%s" % (args.checkpoint or ""),
+        "run_id=%s" % (args.run or ""),
+        "validation_mode=%s" % args.validation,
+        "activation_mode=%s" % args.mode,
+        "start_after_activation=%s" % str(args.start_after_activation).lower(),
+        "dry_run=%s" % str(args.dry_run).lower(),
+        "confirm_destroy=%s" % (args.confirm_destroy or ""),
+        "config_file=%s" % config,
+        "project_manifest_file=%s" % (os.path.realpath(args.project_file) if args.project_file else ""),
+    ]
+    command = ["ansible-playbook", "-i", inventory, str(ROOT / "ansible" / "playbooks" / PLAYBOOKS[args.action])]
+    for item in extra:
+        command.extend(["-e", item])
+    if args.dry_run:
+        command.append("--check")
+    completed = subprocess.run(command, check=False)
+    print(json.dumps({"action": args.action, "exit_code": completed.returncode}, sort_keys=True))
+    return completed.returncode
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except ValueError as error:
+        print(json.dumps({"error": str(error)}), file=sys.stderr)
+        sys.exit(2)

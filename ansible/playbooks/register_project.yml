@@ -1,0 +1,7 @@
+---
+- name: Register existing libvirt project
+  hosts: kvm_hosts
+  gather_facts: false
+  become: true
+  roles:
+    - kvm_lab_manager

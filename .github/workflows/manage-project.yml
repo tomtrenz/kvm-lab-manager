@@ -1,0 +1,56 @@
+name: manage-project
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: Lifecycle operation
+        required: true
+        type: choice
+        options: [register, checkpoint, validate, activate, park, start, list, destroy-run]
+      project_id: {description: Project identifier, required: true, type: string}
+      checkpoint_id: {description: Checkpoint identifier, required: false, type: string}
+      run_id: {description: Run identifier, required: false, type: string}
+      activation_mode: {description: replace or add, required: false, default: replace, type: choice, options: [replace, add]}
+      validation_mode: {description: quick or full, required: false, default: quick, type: choice, options: [quick, full]}
+      confirm_destroy: {description: Type destroy for destruction, required: false, type: string}
+permissions:
+  contents: read
+concurrency:
+  group: kvm-lab-${{ inputs.project_id }}
+  cancel-in-progress: false
+jobs:
+  manage:
+    environment: ${{ inputs.action == 'destroy-run' && 'production-destroy' || 'kvm-lab' }}
+    runs-on: [self-hosted, "${{ vars.KVM_RUNNER_LABEL }}"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate identifiers
+        env:
+          PROJECT: ${{ inputs.project_id }}
+          CHECKPOINT: ${{ inputs.checkpoint_id }}
+          RUN: ${{ inputs.run_id }}
+        run: |
+          python3 - <<'PY'
+          import os, re
+          for key in ("PROJECT", "CHECKPOINT", "RUN"):
+              value = os.environ[key]
+              if value and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", value):
+                  raise SystemExit("invalid identifier")
+          PY
+      - name: Execute lifecycle operation
+        env:
+          KVM_LAB_CONFIG: ${{ vars.KVM_LAB_CONFIG }}
+          KVM_LAB_INVENTORY: ${{ vars.KVM_LAB_INVENTORY }}
+          KVM_LAB_PROJECT_FILE: ${{ vars.KVM_LAB_PROJECT_FILE }}
+        run: |
+          args=(--project "${{ inputs.project_id }}" --config "$KVM_LAB_CONFIG" --inventory "$KVM_LAB_INVENTORY")
+          [[ -n "${{ inputs.checkpoint_id }}" ]] && args+=(--checkpoint "${{ inputs.checkpoint_id }}")
+          [[ -n "${{ inputs.run_id }}" ]] && args+=(--run "${{ inputs.run_id }}")
+          [[ -n "${{ inputs.confirm_destroy }}" ]] && args+=(--confirm-destroy "${{ inputs.confirm_destroy }}")
+          args+=(--mode "${{ inputs.activation_mode }}" --validation "${{ inputs.validation_mode }}")
+          scripts/kvm-lab-manager "${{ inputs.action }}" "${args[@]}" | tee management-report.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: management-report
+          path: management-report.json
+          retention-days: 7

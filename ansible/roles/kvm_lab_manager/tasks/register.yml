@@ -1,0 +1,72 @@
+---
+- name: Require project definition for registration
+  ansible.builtin.assert:
+    that:
+      - project_manifest_file | default('') | length > 0
+      - (project_manifest_file | default('')) is file
+- name: Read project definition
+  ansible.builtin.include_vars:
+    file: "{{ project_manifest_file }}"
+    name: project
+- name: Validate project identity and storage path
+  ansible.builtin.assert:
+    that:
+      - project.project_id == project_id
+      - project.virtual_machines | length > 0
+      - project_id not in ['.', '..']
+- name: Collect domain information without changing libvirt
+  ansible.builtin.command:
+    argv: ["{{ virsh_binary }}", "-c", "{{ libvirt_uri }}", "dominfo", "{{ item.name }}"]
+  loop: "{{ project.virtual_machines }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: domain_info
+  changed_when: false
+- name: Collect inactive domain XML for normalization
+  ansible.builtin.command:
+    argv: ["{{ virsh_binary }}", "-c", "{{ libvirt_uri }}", "dumpxml", "--inactive", "{{ item.name }}"]
+  loop: "{{ project.virtual_machines }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: domain_xml
+  changed_when: false
+- name: Collect disk inventory
+  ansible.builtin.command:
+    argv: ["{{ virsh_binary }}", "-c", "{{ libvirt_uri }}", "domblklist", "--details", "--inactive", "{{ item.name }}"]
+  loop: "{{ project.virtual_machines }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: domain_disks
+  changed_when: false
+- name: Build deterministic registered manifest
+  ansible.builtin.set_fact:
+    registered_manifest:
+      schema_version: 1
+      project_id: "{{ project.project_id }}"
+      kvm_host_ref: "{{ project.kvm_host_ref }}"
+      libvirt_uri_reference: "{{ libvirt_uri | regex_replace('://[^/@]+@', '://') }}"
+      registered_domains:
+        info: "{{ domain_info.results | map(attribute='stdout') | list }}"
+        normalized_xml_sha256: "{{ domain_xml.results | map(attribute='stdout') | map('hash', 'sha256') | list }}"
+        disk_inventory: "{{ domain_disks.results | map(attribute='stdout') | list }}"
+      disks: "{{ domain_disks.results | map(attribute='stdout') | map('regex_findall', '/[^\\s]+') | flatten | unique | sort }}"
+      virtual_machines: "{{ project.virtual_machines | sort(attribute='name') }}"
+      scheduling: "{{ project.scheduling | default({}) }}"
+- name: Ensure metadata directories exist
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ kvm_lab_owner }}"
+    group: "{{ kvm_lab_group }}"
+    mode: "0750"
+  loop:
+    - "{{ kvm_lab_runtime_root }}"
+    - "{{ kvm_lab_storage_root }}/state"
+    - "{{ kvm_lab_storage_root }}/projects/{{ project_id }}"
+- name: Write deterministic registration manifest atomically
+  ansible.builtin.copy:
+    content: "{{ registered_manifest | to_nice_json(indent=2, sort_keys=true) }}\n"
+    dest: "{{ kvm_lab_storage_root }}/projects/{{ project_id }}/manifest.json"
+    owner: "{{ kvm_lab_owner }}"
+    group: "{{ kvm_lab_group }}"
+    mode: "0640"

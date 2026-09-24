@@ -1,0 +1,62 @@
+---
+- name: Require checkpoint
+  ansible.builtin.assert:
+    that: checkpoint_id | length > 0
+- name: Load checkpoint manifest
+  ansible.builtin.include_vars:
+    file: "{{ kvm_lab_storage_root }}/projects/{{ project_id }}/checkpoints/{{ checkpoint_id }}/manifest/checkpoint.json"
+    name: checkpoint
+- name: Verify checkpoint disk directory is within project root
+  ansible.builtin.command:
+    argv: [realpath, "{{ kvm_lab_storage_root }}/projects/{{ project_id }}/checkpoints/{{ checkpoint_id }}/disks"]
+  register: disk_root
+  changed_when: false
+- name: Validate disk root
+  ansible.builtin.assert:
+    that:
+      - disk_root.stdout is search(kvm_lab_storage_root + '/projects/' + project_id + '/checkpoints/' + checkpoint_id)
+- name: Quick validate all checkpoint files
+  ansible.builtin.stat:
+    path: "{{ item.file }}"
+  loop: "{{ checkpoint.disks | default([]) }}"
+  register: checkpoint_files
+- name: Refuse missing or writable checkpoint disk
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+      - item.stat.mode not in ['0666', '0664', '0644']
+  loop: "{{ checkpoint_files.results }}"
+- name: Inspect checkpoint metadata and reject backing chains
+  ansible.builtin.command:
+    argv: ["{{ qemu_img_binary }}", "info", "--output=json", "{{ item.file }}"]
+  loop: "{{ checkpoint.disks | default([]) }}"
+  register: checkpoint_info
+  changed_when: false
+- name: Assert checkpoint disks are standalone QCOW2
+  ansible.builtin.assert:
+    that:
+      - (item.stdout | from_json).format == 'qcow2'
+      - (item.stdout | from_json).get('backing-filename', None) in [None, '']
+  loop: "{{ checkpoint_info.results }}"
+- name: Full validation with qemu-img and checksum
+  when: validation_mode == 'full'
+  block:
+    - name: Check QCOW2 integrity
+      ansible.builtin.command:
+        argv: ["{{ qemu_img_binary }}", "check", "--format", "qcow2", "{{ item.file }}"]
+      loop: "{{ checkpoint.disks | default([]) }}"
+      changed_when: false
+    - name: Compare immutable checksums
+      ansible.builtin.command:
+        argv: [sha256sum, "{{ item.file }}"]
+      loop: "{{ checkpoint.disks | default([]) }}"
+      loop_control:
+        index_var: checksum_index
+      register: calculated_checksums
+      changed_when: false
+    - name: Assert SHA-256 matches manifest
+      ansible.builtin.assert:
+        that: item.stdout.split()[0] == checkpoint.disks[checksum_index].sha256
+      loop: "{{ calculated_checksums.results }}"
+      loop_control:
+        index_var: checksum_index
