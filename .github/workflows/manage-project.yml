@@ -13,6 +13,8 @@ on:
       activation_mode: {description: replace or add, required: false, default: replace, type: choice, options: [replace, add]}
       validation_mode: {description: quick or full, required: false, default: quick, type: choice, options: [quick, full]}
       confirm_destroy: {description: Type destroy for destruction, required: false, type: string}
+permissions:
+  contents: read
 concurrency:
   group: kvm-lab-${{ inputs.project_id }}
   cancel-in-progress: false
