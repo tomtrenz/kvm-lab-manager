@@ -1,0 +1,17 @@
+---
+schema_version: 1
+kvm_lab_storage_root: "${KVM_LAB_STORAGE_ROOT}"
+kvm_lab_runtime_root: "${KVM_LAB_RUNTIME_ROOT}"
+kvm_lab_registry_path: "${KVM_LAB_REGISTRY_PATH}"
+kvm_lab_lock_timeout_seconds: "${KVM_LAB_LOCK_TIMEOUT_SECONDS}"
+kvm_lab_shutdown_retries: "${KVM_LAB_SHUTDOWN_RETRIES}"
+kvm_lab_shutdown_delay: "${KVM_LAB_SHUTDOWN_DELAY}"
+kvm_lab_owner: "${KVM_LAB_OWNER}"
+kvm_lab_group: "${KVM_LAB_GROUP}"
+kvm_lab_selinux_enabled: false
+kvm_lab_selinux_type: "${KVM_LAB_SELINUX_TYPE}"
+libvirt_uri: "${LIBVIRT_URI}"
+checksum_algorithm: sha256
+allow_force_destroy: false
+orchestration_lock_name: "${ORCHESTRATION_LOCK_NAME}"
+quarantine_root: "${KVM_LAB_QUARANTINE_ROOT}"

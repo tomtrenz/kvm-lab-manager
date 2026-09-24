@@ -1,0 +1,7 @@
+---
+schema_version: 1
+kvm_hosts:
+  "${KVM_HOST_REF}":
+    ansible_host: "${KVM_HOST_ADDRESS}"
+    ansible_user: "${KVM_HOST_USER}"
+    libvirt_uri: "${LIBVIRT_URI}"

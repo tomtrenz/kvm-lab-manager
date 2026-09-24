@@ -1,0 +1,12 @@
+---
+- name: Stop domains in declared order
+  ansible.builtin.command:
+    argv: ["{{ virsh_binary }}", "-c", "{{ libvirt_uri }}", "shutdown", "{{ item.name }}"]
+  loop: "{{ (project.virtual_machines | default([])) | sort(attribute='stop_order', reverse=true) }}"
+  changed_when: true
+  failed_when: false
+- name: Mark run parked without deleting overlays
+  ansible.builtin.copy:
+    content: "{{ {'project_id': project_id, 'run_id': run_id, 'state': 'parked'} | to_nice_json(indent=2, sort_keys=true) }}\n"
+    dest: "{{ kvm_lab_storage_root }}/projects/{{ project_id }}/runs/{{ run_id }}/runtime/state.json"
+    mode: "0640"

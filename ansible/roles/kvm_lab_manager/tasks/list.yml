@@ -1,0 +1,9 @@
+---
+- name: Read active registry
+  ansible.builtin.slurp:
+    src: "{{ kvm_lab_registry_path }}"
+  register: active_registry
+  failed_when: false
+- name: Return structured registry
+  ansible.builtin.debug:
+    msg: "{{ (active_registry.content | default('e30=') | b64decode | from_json) }}"

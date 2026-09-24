@@ -1,0 +1,6 @@
+---
+- name: restore selinux context
+  ansible.builtin.command:
+    argv: [restorecon, "-RF", "{{ kvm_lab_storage_root }}"]
+  changed_when: false
+  when: kvm_lab_selinux_enabled | default(false) | bool

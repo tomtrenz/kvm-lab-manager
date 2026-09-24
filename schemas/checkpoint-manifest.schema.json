@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/kvm-lab-manager/checkpoint-manifest.schema.json",
+  "type": "object",
+  "required": ["schema_version", "project_id", "checkpoint_id", "status", "kvm_host_ref", "virtual_machines", "totals"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "project_id": {"$ref": "#/$defs/id"},
+    "checkpoint_id": {"$ref": "#/$defs/id"},
+    "created_at": {"type": "string"},
+    "created_by": {"type": "string", "minLength": 1},
+    "source_project_manifest_revision": {"type": "string"},
+    "source_checkpoint_id": {"type": ["string", "null"]},
+    "source_run_id": {"type": ["string", "null"]},
+    "kvm_host_ref": {"$ref": "#/$defs/id"},
+    "libvirt_uri": {"type": "string", "pattern": "^[^\\s]+$"},
+    "status": {"const": "immutable"},
+    "virtual_machines": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/vm"}},
+    "totals": {"type": "object", "required": ["logical_bytes", "physical_bytes"], "properties": {"logical_bytes": {"type": "integer", "minimum": 0}, "physical_bytes": {"type": "integer", "minimum": 0}}, "additionalProperties": false}
+  },
+  "$defs": {
+    "id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"},
+    "vm": {
+      "type": "object",
+      "required": ["original_name", "domain_config", "disks"],
+      "properties": {
+        "original_name": {"$ref": "#/$defs/id"},
+        "domain_name": {"$ref": "#/$defs/id"},
+        "uuid": {"type": "string"},
+        "domain_config": {"type": "object"},
+        "domain_config_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "disks": {"type": "array", "minItems": 1, "items": {"type": "object", "required": ["file", "role", "format", "virtual_bytes", "physical_bytes", "sha256", "backing_file"], "properties": {"file": {"type": "string"}, "role": {"type": "string"}, "format": {"const": "qcow2"}, "virtual_bytes": {"type": "integer", "minimum": 0}, "physical_bytes": {"type": "integer", "minimum": 0}, "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "backing_file": {"const": null}}, "additionalProperties": true}}
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

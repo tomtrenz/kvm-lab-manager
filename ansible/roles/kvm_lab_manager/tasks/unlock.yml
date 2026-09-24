@@ -1,0 +1,16 @@
+---
+- name: Release project lock
+  ansible.builtin.file:
+    path: "{{ kvm_lab_storage_root }}/locks/project-{{ project_id }}"
+    state: absent
+  when:
+    - project_id | length > 0
+    - project_lock is defined
+    - project_lock.rc | default(1) == 0
+- name: Release orchestration lock
+  ansible.builtin.file:
+    path: "{{ kvm_lab_storage_root }}/locks/{{ orchestration_lock_name | default('orchestration') }}"
+    state: absent
+  when:
+    - orchestration_lock is defined
+    - orchestration_lock.rc | default(1) == 0

@@ -1,0 +1,27 @@
+---
+- name: Create lock directories
+  ansible.builtin.file:
+    path: "{{ kvm_lab_storage_root }}/locks"
+    state: directory
+    owner: "{{ kvm_lab_owner }}"
+    group: "{{ kvm_lab_group }}"
+    mode: "0750"
+- name: Acquire orchestration lock atomically
+  ansible.builtin.command:
+    argv: [mkdir, "{{ kvm_lab_storage_root }}/locks/{{ orchestration_lock_name | default('orchestration') }}"]
+  register: orchestration_lock
+  changed_when: true
+  retries: "{{ kvm_lab_lock_timeout_seconds | int }}"
+  delay: 1
+  until: orchestration_lock.rc == 0
+  failed_when: orchestration_lock.rc != 0
+- name: Acquire project lock atomically
+  ansible.builtin.command:
+    argv: [mkdir, "{{ kvm_lab_storage_root }}/locks/project-{{ project_id }}"]
+  register: project_lock
+  changed_when: true
+  retries: "{{ kvm_lab_lock_timeout_seconds | int }}"
+  delay: 1
+  until: project_lock.rc == 0
+  failed_when: project_lock.rc != 0
+  when: project_id | length > 0

@@ -1,0 +1,7 @@
+---
+- name: Destroy one stopped working run
+  hosts: kvm_hosts
+  gather_facts: false
+  become: true
+  roles:
+    - kvm_lab_manager

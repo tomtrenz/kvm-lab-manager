@@ -1,0 +1,7 @@
+---
+galaxy_info:
+  author: kvm-lab-manager
+  description: Safe lifecycle operations for existing libvirt domains
+  license: MIT
+  min_ansible_version: "2.14"
+dependencies: []
