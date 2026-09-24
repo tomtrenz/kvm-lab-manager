@@ -1,0 +1,722 @@
+Vytvoř kompletní samostatný repozitář s názvem „kvm-lab-manager“.
+
+Než začneš implementovat:
+1. Projdi celý aktuální workspace.
+2. Pokud už obsahuje soubory, respektuj jejich strukturu a nic existujícího nepřepisuj bez důvodu.
+3. Sepiš stručný implementační plán.
+4. Potom implementuj celé řešení.
+5. Nakonec spusť dostupné validace, linty a testy.
+6. Nikdy nevypisuj ani neukládej hesla, privátní klíče, tokeny nebo jiné secrets.
+
+# Cíl
+
+Repozitář bude fungovat jako projektově orientovaný lifecycle manager již existujících virtuálních strojů na RHEL 9 KVM/libvirt.
+
+Nebude instalovat RHEL, spouštět Kickstart ani vytvářet původní operační systém.
+
+Existující externí Ansible automatizace již vytváří a nakonfiguruje celé clustery, například 12 hotových VM. Tento manager převezme hotové VM pouze podle jejich libvirt názvů, vytvoří z nich verzované checkpointy a umožní rychle aktivovat čistý nebo dříve uložený stav celého projektu.
+
+Použij:
+
+- Terraform;
+- provider dmacvicar/libvirt;
+- Ansible;
+- qemu-img;
+- virsh/libvirt;
+- GitHub Actions workflow_dispatch, pokud v repozitáři není nalezen jiný CI systém;
+- self-hosted runner na RHEL KVM nebo runner s přístupem k libvirt.
+
+Nepoužívej:
+
+- Packer;
+- Vagrant;
+- cloud-init;
+- Foreman image provisioning;
+- OpenStack;
+- Proxmox;
+- kontejnery pro provoz VM;
+- staticky zapsané názvy projektů, VM, checkpointů, KVM hostů, bridge, sítí nebo storage cest.
+
+# Základní model
+
+Na jednom nebo více RHEL KVM hostech budou projekty:
+
+projekt1:
+- original-2026-09-24-v1
+- build1-2026-09-24
+
+projekt2:
+- original-2026-03-12-v1
+- build1-2026-03-12
+- build2-2026-04-20
+
+Každý checkpoint představuje celý projekt, tedy sadu disků všech VM projektu.
+
+Binární QCOW2 soubory musí zůstat výhradně na RHEL KVM hostu.
+
+Git repozitář nesmí obsahovat QCOW2 ani jiné velké binární obrazy. V Gitu budou pouze:
+
+- zdrojový kód;
+- Ansible playbooky a role;
+- Terraform konfigurace;
+- definice projektů;
+- checkpoint manifesty;
+- checksumy;
+- sanitizované exporty libvirt konfigurace, pokud jsou potřeba;
+- dokumentace;
+- testy.
+
+# Důležitá konfigurační zásada
+
+Veškeré hodnoty specifické pro prostředí musí být proměnné.
+
+Nesmí být natvrdo uvedeno:
+
+- jméno projektu;
+- název VM;
+- název checkpointu;
+- cesta `/opt/...` nebo `/var/lib/...`;
+- hostname KVM serveru;
+- libvirt URI;
+- název storage poolu;
+- bridge;
+- IP rozsah;
+- počet VM;
+- velikost disků;
+- počet CPU;
+- RAM;
+- timeout;
+- vlastník nebo skupina souborů;
+- SELinux typ;
+- CI runner label;
+- názvy Terraform state keys.
+
+Povolené jsou pouze technické konstanty, například verze schématu, formát QCOW2 nebo připnutá verze Terraform provideru.
+
+Vytvoř příklad konfigurace s placeholdery, ale žádná ukázková hodnota nesmí být používána automaticky v produkčním běhu.
+
+Použij jasnou hierarchii proměnných:
+
+1. globální konfigurace;
+2. konfigurace KVM hostu;
+3. konfigurace projektu;
+4. konfigurace checkpointu;
+5. parametry konkrétní operace/CI běhu.
+
+# Požadovaná struktura repozitáře
+
+Navrhni a implementuj přibližně tuto strukturu:
+
+kvm-lab-manager/
+├── README.md
+├── Makefile
+├── ansible.cfg
+├── requirements.yml
+├── inventories/
+│   └── example/
+├── config/
+│   ├── global.example.yml
+│   └── hosts.example.yml
+├── projects/
+│   └── example-project.yml
+├── manifests/
+│   └── .gitkeep
+├── checksums/
+│   └── .gitkeep
+├── ansible/
+│   ├── playbooks/
+│   │   ├── register_project.yml
+│   │   ├── create_checkpoint.yml
+│   │   ├── validate_checkpoint.yml
+│   │   ├── activate_project.yml
+│   │   ├── park_project.yml
+│   │   ├── start_project.yml
+│   │   ├── list_projects.yml
+│   │   └── destroy_run.yml
+│   └── roles/
+│       └── kvm_lab_manager/
+│           ├── defaults/main.yml
+│           ├── tasks/
+│           ├── handlers/main.yml
+│           ├── templates/
+│           └── meta/main.yml
+├── terraform/
+│   ├── versions.tf
+│   ├── variables.tf
+│   ├── main.tf
+│   ├── outputs.tf
+│   └── modules/
+│       └── libvirt_project/
+├── scripts/
+│   └── kvm-lab-manager
+├── tests/
+└── .github/workflows/
+    ├── validate.yml
+    └── manage-project.yml
+
+Strukturu můžeš rozumně upravit, pokud zdokumentuješ proč.
+
+# Projektová konfigurace
+
+Uživatel musí při prvotní registraci zadat pouze:
+
+- project_id;
+- kvm_host nebo odkaz na definovaný KVM host;
+- seznam existujících libvirt názvů VM;
+- volitelně resource/network exclusivity group;
+- volitelně pořadí startu a vypnutí.
+
+Příklad:
+
+schema_version: 1
+project_id: "${PROJECT_ID}"
+kvm_host_ref: "${KVM_HOST_REF}"
+
+virtual_machines:
+  - name: "${VM_NAME_1}"
+    start_order: 10
+    stop_order: 90
+  - name: "${VM_NAME_2}"
+    start_order: 20
+    stop_order: 80
+
+scheduling:
+  exclusive_groups: []
+  allow_concurrent_projects: false
+
+Nepiš skutečné názvy infrastruktury.
+
+# Registrace existujícího projektu
+
+Implementuj idempotentní operaci `register-project`.
+
+Vstupem budou pouze názvy VM a reference KVM hostu.
+
+Registrace musí být read-only a musí přes libvirt automaticky zjistit:
+
+- libvirt domain name;
+- UUID;
+- stav domény;
+- XML konfiguraci;
+- všechny file-backed writable disky;
+- jejich formát;
+- storage pool;
+- absolutní canonical cestu;
+- virtuální a fyzickou velikost;
+- backing chain;
+- CPU;
+- RAM;
+- MAC adresy;
+- libvirt network nebo bridge;
+- UEFI NVRAM;
+- přítomnost vTPM;
+- případná další zařízení relevantní pro přesné obnovení.
+
+Ignoruj read-only CD-ROM a instalační ISO, ale zaznamenej je do diagnostického výstupu.
+
+Pokud VM používá nepodporovaný typ storage nebo zařízení, bezpečně selži a vypiš přesný důvod. Nic automaticky nepřeváděj.
+
+Registrace musí vytvořit deterministický projektový manifest. Uživatel jej následně uloží do Gitu.
+
+Nespoléhej dlouhodobě pouze na název VM. Po registraci do manifestu ulož také UUID, diskové cesty a další zjištěnou identitu.
+
+Sanitizuj exportované XML. Neukládej secrets ani runtime-only data.
+
+# Storage na RHEL KVM
+
+Skutečný storage root musí být proměnná, například `kvm_lab_storage_root`.
+
+Pod ním vytvoř strukturu:
+
+${kvm_lab_storage_root}/
+├── projects/
+│   └── ${project_id}/
+│       ├── checkpoints/
+│       │   └── ${checkpoint_id}/
+│       │       ├── disks/
+│       │       ├── domains/
+│       │       └── manifest/
+│       └── runs/
+│           └── ${run_id}/
+│               ├── disks/
+│               ├── domains/
+│               └── runtime/
+├── locks/
+└── state/
+
+Všechny cesty sestavuj z validovaných proměnných. Chraň se proti path traversal, prázdným hodnotám, `/`, `~`, `$HOME` a jiným nebezpečným cílům.
+
+Použij libvirt directory storage pools. Jména poolů generuj deterministicky z proměnných a validuj maximální délku i povolené znaky.
+
+Nastav správná oprávnění a SELinux context podle proměnných. Použij `semanage fcontext` a `restorecon`, pokud jsou dostupné a nakonfigurované.
+
+# Vytvoření prvního checkpointu
+
+Implementuj operaci `create-checkpoint`.
+
+Musí:
+
+1. získat per-project lock;
+2. ověřit, že projekt je registrován;
+3. ověřit všechny očekávané VM a disky;
+4. volitelně zavolat projektový pre-stop Ansible hook;
+5. korektně vypnout všechny VM v definovaném stop pořadí;
+6. čekat na stav `shut off`;
+7. nikdy automaticky nepoužít force destroy, pokud není explicitně povoleno proměnnou;
+8. vytvořit checkpoint ve staging adresáři;
+9. z každého efektivního VM disku vytvořit samostatný standalone QCOW2 pomocí `qemu-img convert -O qcow2`;
+10. po každém disku spustit `qemu-img check`;
+11. vytvořit SHA-256;
+12. uložit virtuální i fyzickou velikost;
+13. exportovat potřebnou definici VM;
+14. vytvořit manifest celého projektu;
+15. atomicky přejmenovat staging adresář na finální checkpoint;
+16. nastavit checkpoint jako immutable/read-only;
+17. nikdy nepřepsat existující checkpoint stejného jména;
+18. vygenerovat soubory manifestu a checksumů určené k uložení do Git repozitáře.
+
+Uložené checkpointy mají být samostatné a přenositelné v rámci KVM hostu. Aktivní pracovní běhy budou QCOW2 overlaye nad vybraným checkpointem.
+
+Nevytvářej dlouhé backing chains mezi checkpointy. Každý uložený checkpoint má být zploštěný standalone QCOW2. Pouze pracovní run bude writable overlay nad checkpointem.
+
+Tento zvolený návrh výslovně zdokumentuj:
+
+checkpoint = standalone immutable QCOW2
+working run = disposable writable QCOW2 overlay
+
+# Aktivace projektu
+
+Implementuj operaci `activate-project` s parametry:
+
+- project_id;
+- checkpoint_id;
+- run_id;
+- activation_mode: replace nebo add;
+- validation_mode: quick nebo full;
+- start_after_activation: true/false.
+
+Postup:
+
+1. získat globální orchestration lock a per-project lock;
+2. načíst projektový a checkpoint manifest;
+3. provést validaci vstupů;
+4. ověřit dostupné místo;
+5. ověřit odhad RAM a CPU;
+6. ověřit kolize názvů domén;
+7. ověřit kolize MAC adres;
+8. ověřit network/exclusivity groups;
+9. při režimu `replace` korektně zaparkovat všechny konfliktní aktivní projekty;
+10. při režimu `add` odmítnout aktivaci při kolizi;
+11. pro každý disk každé VM vytvořit nový QCOW2 overlay s backing file na disk vybraného checkpointu;
+12. použít explicitní backing format qcow2;
+13. vytvořit nebo definovat nové libvirt domény;
+14. názvy domén odvodit z project_id, run_id a původního VM jména;
+15. nepoužívat původní libvirt UUID pro současně evidované klony;
+16. zachovat hardware, disky a síť podle registrovaného manifestu;
+17. spustit VM v definovaném pořadí;
+18. volitelně spustit post-start Ansible health check;
+19. aktualizovat lokální active-project registry;
+20. vypsat strukturovaný souhrn.
+
+Pokud jsou hostnames a IP uvnitř VM stejné, musí manager zabránit současnému spuštění konfliktních projektů.
+
+# Terraform
+
+Použij aktuální stabilní řadu provideru `dmacvicar/libvirt` a připni přesnou ověřenou verzi.
+
+Pozor na rozdíly mezi providerem 0.8 a 0.9+. Použij syntaxi aktuální připnuté verze a nespoléhej na zastaralé příklady.
+
+Terraform musí deklarativně spravovat:
+
+- libvirt directory pools pro pracovní runy;
+- QCOW2 overlay volumes;
+- backing_store path a format;
+- libvirt domains;
+- CPU;
+- RAM;
+- disky;
+- sítě/bridge;
+- autostart pouze podle proměnné.
+
+Použij `for_each` nad mapou VM a disků. Žádná konfigurace nesmí předpokládat konkrétní počet VM.
+
+Terraform proměnné musí minimálně zahrnovat:
+
+- libvirt_uri;
+- project_id;
+- checkpoint_id;
+- run_id;
+- storage_root;
+- storage_pool_name;
+- vm_definitions;
+- checkpoint_disks;
+- domain_name_prefix;
+- autostart;
+- start_domains;
+- tags/metadata, pokud je provider podporuje;
+- connection a timeout parametry.
+
+Terraform state nesmí být uložen do adresáře s image. Podporuj konfigurovatelný remote backend. Backend konfiguraci nepřepisuj natvrdo v modulech.
+
+Každý projekt/run musí mít samostatný state key odvozený z validovaných proměnných.
+
+Core operace neimplementuj pomocí Terraform `local-exec`, pokud je lze vyřešit přímo providerem. Pokud je nějaký krok providerem objektivně nepodporovaný, proveď ho v Ansible a zdokumentuj hranici odpovědnosti.
+
+Terraform nesmí spravovat immutable checkpoint files jako destruktivní resources. Má spravovat pouze pracovní pools, overlaye a domény.
+
+# Park, start a odstranění runu
+
+Implementuj:
+
+## park-project
+
+- korektní aplikační stop hook;
+- shutdown VM v pořadí;
+- zachovat overlaye;
+- zachovat Terraform state;
+- zachovat libvirt definice;
+- aktualizovat active registry;
+- operace musí být idempotentní.
+
+## start-project
+
+- quick validace;
+- kontrola konfliktů;
+- start v pořadí;
+- health check;
+- aktualizace active registry.
+
+## destroy-run
+
+Toto je destruktivní operace.
+
+Musí vyžadovat:
+
+- project_id;
+- run_id;
+- explicitní `confirm_destroy` hodnotu odpovídající očekávanému textu;
+- ověření, že VM jsou vypnuté;
+- kontrolu, že cílové cesty leží pod přesným storage root projektu;
+- kontrolu, že nejde o checkpoint adresář;
+- Terraform destroy pouze pro state konkrétního runu;
+- závěrečný report odstraněných zdrojů.
+
+Nikdy nepoužívej neomezené `rm -rf`, globy nebo nerozbalené proměnné.
+
+Checkpoint nesmí být odstranitelný přes `destroy-run`.
+
+# Vytvoření dalšího checkpointu
+
+Aktivní run musí být možné uložit například jako:
+
+- build1;
+- build2;
+- before-upgrade;
+- after-upgrade.
+
+Při vytvoření checkpointu z runu:
+
+1. zastav projekt;
+2. zkontroluj, že žádný disk není otevřen pro zápis;
+3. pomocí `qemu-img convert` zplošti efektivní obsah overlay + backing checkpointu do nového standalone QCOW2;
+4. proveď `qemu-img check`;
+5. vytvoř SHA-256;
+6. vytvoř nový immutable checkpoint manifest;
+7. zaznamenej `source_checkpoint_id` a `source_run_id` pouze jako provenance;
+8. nový checkpoint nesmí být technicky závislý na původním backing file;
+9. původní checkpoint ani run automaticky nemaž.
+
+Tím musí být možné mít:
+
+original-v1
+build1 vytvořený z original-v1
+build2 vytvořený buď z original-v1, nebo z build1
+
+Každý uložený checkpoint však bude samostatný a nebude mít backing file.
+
+# Validace
+
+Implementuj dva validační režimy.
+
+## Quick validation
+
+Při každé aktivaci:
+
+- manifest schema;
+- existence všech disků;
+- canonical paths;
+- vlastník a oprávnění;
+- SELinux context, pokud je kontrola povolena;
+- formát QCOW2;
+- očekávaný počet VM a disků;
+- virtuální velikost;
+- checkpoint disk nemá backing file;
+- checkpoint není otevřen pro zápis;
+- libvirt XML/normalizovaná konfigurace odpovídá manifestu;
+- dostatek storage;
+- konflikty aktivních projektů.
+
+## Full validation
+
+Navíc:
+
+- `qemu-img check` každého disku;
+- SHA-256 každého disku;
+- porovnání s checksum souborem v Git repozitáři;
+- kontrola všech domain definitions;
+- kontrola kompletnosti checkpointu;
+- strukturovaný report.
+
+SHA-256 nikdy nepočítej nad aktivním writable overlayem. Checksumy jsou pouze pro vypnuté immutable checkpointy.
+
+Umožni konfigurovat checksum algoritmus, ale bezpečný výchozí algoritmus musí být SHA-256 nebo silnější.
+
+Checksumy pouze detekují poškození. V README jasně napiš, že nenahrazují zálohu.
+
+# Manifest
+
+Navrhni JSON Schema nebo YAML schema s verzí.
+
+Manifest checkpointu musí obsahovat minimálně:
+
+- schema_version;
+- project_id;
+- checkpoint_id;
+- created_at;
+- created_by;
+- source_project_manifest_revision;
+- source_checkpoint_id;
+- source_run_id;
+- kvm_host_ref;
+- libvirt URI reference, nikoli secret;
+- status immutable;
+- VM seznam;
+- původní jméno VM;
+- uloženou normalizovanou konfiguraci;
+- diskové soubory;
+- role disku;
+- formát;
+- virtuální velikost;
+- fyzickou velikost;
+- SHA-256;
+- informaci, že backing file není přítomen;
+- checksum domain configuration;
+- celkovou logickou a fyzickou velikost projektu.
+
+Výstup musí být deterministický, aby opakované generování bez změny nevytvářelo zbytečný Git diff. Proměnlivá runtime data odděl od verzovaných manifestů.
+
+# Lockování a paralelismus
+
+Použij:
+
+- globální orchestration lock;
+- per-project lock;
+- per-checkpoint lock;
+- timeouty řízené proměnnými;
+- atomické staging adresáře;
+- atomický rename po úspěšném checkpointu.
+
+Zabraň souběžnému:
+
+- checkpointu stejného projektu;
+- aktivaci konfliktních projektů;
+- odstranění běžícího runu;
+- validaci checksumu během zápisu;
+- přepsání existujícího checkpointu.
+
+# CLI
+
+Vytvoř jednoduchý wrapper `scripts/kvm-lab-manager`.
+
+Nemá obsahovat business logiku, pouze:
+
+- validaci základních argumentů;
+- načtení konfigurace;
+- volání správného Ansible playbooku a Terraform operace;
+- konzistentní exit codes;
+- čitelný a JSON výstup.
+
+Podporované příkazy:
+
+kvm-lab-manager register
+kvm-lab-manager checkpoint
+kvm-lab-manager validate
+kvm-lab-manager activate
+kvm-lab-manager park
+kvm-lab-manager start
+kvm-lab-manager list
+kvm-lab-manager destroy-run
+
+Příklady použití musí vždy používat proměnné nebo placeholdery:
+
+kvm-lab-manager activate \
+  --project "${PROJECT_ID}" \
+  --checkpoint "${CHECKPOINT_ID}" \
+  --run "${RUN_ID}" \
+  --mode replace
+
+Implementuj `--dry-run`, kde je to bezpečně možné.
+
+# CI
+
+Pokud není přítomen jiný CI systém, vytvoř GitHub Actions workflow pro self-hosted runner.
+
+Runner label musí pocházet z GitHub repository/environment variable, nesmí být staticky zapsán jako konkrétní hostname.
+
+Workflow `manage-project` musí být ručně spustitelný a přijímat:
+
+- action;
+- project_id;
+- checkpoint_id;
+- run_id;
+- activation_mode;
+- validation_mode;
+- confirm_destroy.
+
+Podporované action:
+
+- register;
+- checkpoint;
+- validate;
+- activate;
+- park;
+- start;
+- list;
+- destroy-run.
+
+Workflow musí:
+
+- používat concurrency group odvozenou z project_id;
+- validovat vstupy;
+- používat environment protection pro destruktivní nebo produkční operace;
+- nepřenášet QCOW2 přes GitHub;
+- nepřidávat secrets do logu;
+- ukládat pouze malé validační reporty jako CI artefakty;
+- spouštět se na self-hosted runneru s přístupem ke KVM/libvirt.
+
+Vytvoř samostatný validační workflow pro:
+
+- terraform fmt;
+- terraform validate;
+- ansible-lint;
+- yamllint;
+- kontrolu YAML/JSON schema;
+- shellcheck;
+- testy nedestruktivních částí.
+
+# Aktivní registry
+
+Na KVM hostu udržuj malý runtime registry soubor pod konfigurovatelnou cestou.
+
+Musí obsahovat:
+
+- aktivní project_id;
+- run_id;
+- checkpoint_id;
+- libvirt domény;
+- start time;
+- Terraform state key;
+- exclusivity groups.
+
+Aktualizace musí být atomická a chráněná lockem.
+
+Git manifest není runtime state. Terraform state není katalog checkpointů. Tyto odpovědnosti drž odděleně.
+
+# Bezpečnost
+
+- Nepoužívej shell command construction z nevalidovaných hodnot.
+- Preferuj Ansible moduly a `command.argv`.
+- Nepoužívej `shell`, pokud není nezbytný.
+- Nepoužívej nebezpečné globy.
+- Všechny identifikátory validuj regulárním výrazem.
+- Všechny cílové cesty ověř přes canonical `realpath`.
+- Nikdy nemaž nic mimo přesný run adresář.
+- Checkpoint adresáře musí být chráněny před odstraněním.
+- Base/checkpoint disky nesmí být spuštěny přímo jako writable disky.
+- Vždy vytvářej pracovní overlay.
+- Ověř, že checkpoint není použit jako writable disk existující doménou.
+- Nevkládej secrets do Terraform state.
+- Neukládej hesla ani privátní klíče do manifestů.
+- Logy musí být bezpečné.
+- Všechny destruktivní operace musí být explicitní.
+- Při částečném selhání ponech staging data pro diagnostiku nebo je přesuň do konfigurovatelné quarantine cesty.
+- Nepokračuj po neúspěšné validaci.
+
+# Idempotence
+
+Každá operace musí být idempotentní.
+
+Příklady:
+
+- opakovaná registrace bez změn nevytvoří diff;
+- opakovaný quick validate nic nezmění;
+- park vypnutého projektu uspěje bez změny;
+- start běžícího projektu uspěje bez dvojitého startu;
+- activate existujícího stejného runu nevytvoří další overlaye;
+- checkpoint se stejným jménem se nikdy nepřepíše;
+- Terraform plan po dokončeném apply musí být prázdný.
+
+# Testy a acceptance criteria
+
+Implementuj automatizované testy pro čisté transformační a validační funkce.
+
+Přidej integrační testovací plán pro RHEL KVM:
+
+1. Zaregistrovat projekt pouze podle seznamu názvů existujících VM.
+2. Ověřit, že registrace nic nezměnila.
+3. Vytvořit `original` checkpoint.
+4. Ověřit, že všechny checkpoint disky jsou standalone QCOW2 bez backing file.
+5. Ověřit SHA-256.
+6. Aktivovat nový run z `original`.
+7. Ověřit, že všechny pracovní disky mají správný backing file.
+8. Provést změnu uvnitř testovací VM.
+9. Vytvořit `build1` checkpoint.
+10. Ověřit, že `build1` je standalone a immutable.
+11. Aktivovat nový run z `original` a ověřit, že změna z build1 není přítomná.
+12. Aktivovat nový run z `build1` a ověřit, že změna přítomná je.
+13. Zaparkovat projekt.
+14. Aktivovat jiný projekt v režimu replace.
+15. Ověřit odmítnutí režimu add při síťovém konfliktu.
+16. Úmyslně změnit testovací kopii checkpointu a ověřit selhání full checksum validace.
+17. Ověřit, že destroy-run nemůže odstranit checkpoint.
+18. Ověřit prázdný Terraform plan po apply.
+
+# Dokumentace
+
+README musí česky vysvětlit:
+
+- účel repozitáře;
+- architekturu;
+- rozdíl mezi projektem, checkpointem a runem;
+- proč jsou checkpointy standalone;
+- proč jsou runy overlaye;
+- kde jsou data;
+- co je v Gitu;
+- jak probíhá registrace;
+- jak vytvořit original;
+- jak vytvořit build1/build2;
+- jak aktivovat čistý projekt;
+- jak přepínat projekty;
+- jak spustit více projektů současně;
+- jak fungují kolize;
+- jak funguje quick/full validace;
+- jak fungují checksumy;
+- jak funguje Terraform state;
+- jak řešit zálohu original checkpointů;
+- recovery postup při neúspěšné operaci;
+- upgrade postup pro Terraform provider;
+- přesné příklady příkazů pouze s placeholdery.
+
+Přidej architektonický diagram v Mermaid.
+
+# Výstup práce
+
+Po implementaci:
+
+1. vypiš vytvořené a změněné soubory;
+2. vysvětli hlavní návrhová rozhodnutí;
+3. uveď přesné validace a testy, které byly spuštěny;
+4. uveď případné části, které vyžadují skutečný RHEL KVM integrační test;
+5. nevydávej práci za dokončenou, pokud Terraform syntaxe neprojde `terraform validate`;
+6. nevytvářej ani neaktivuj skutečné VM bez explicitního spuštění uživatelem;
+7. nepoužívej v testech skutečné produkční názvy nebo cesty.
